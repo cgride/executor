@@ -24,6 +24,7 @@
 
 namespace
 {
+#if !defined(_WIN32)
   [[nodiscard]] cgride::core::Command make_echo_command(const std::string &text)
   {
     cgride::core::Command command;
@@ -93,6 +94,7 @@ namespace
 
     return nullptr;
   }
+#endif
 
 } // namespace
 

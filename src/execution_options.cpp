@@ -49,6 +49,12 @@ namespace cgride::executor
     return *this;
   }
 
+  ExecutionOptions &ExecutionOptions::skip_up_to_date(bool value) noexcept
+  {
+    skip_up_to_date_ = value;
+    return *this;
+  }
+
   ExecutionOptions &ExecutionOptions::inherit_environment(bool value) noexcept
   {
     inherit_environment_ = value;
@@ -98,6 +104,11 @@ namespace cgride::executor
   bool ExecutionOptions::capture_output() const noexcept
   {
     return capture_output_;
+  }
+
+  bool ExecutionOptions::skip_up_to_date() const noexcept
+  {
+    return skip_up_to_date_;
   }
 
   bool ExecutionOptions::inherit_environment() const noexcept

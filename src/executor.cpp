@@ -89,9 +89,13 @@ namespace cgride::executor
         const TaskResult &result,
         const ExecutionOptions &options)
     {
+      const auto event_kind = result.status() == TaskStatus::Skipped
+                                  ? EventKind::TaskSkipped
+                                  : EventKind::TaskFinished;
+
       options.emit_event(
           Event(
-              result.success() ? EventKind::TaskFinished : EventKind::TaskSkipped,
+              event_kind,
               "Task finished: " + std::string(result.task_id().value()) +
                   " (" + std::string(to_string(result.status())) + ")")
               .task_id(std::string(result.task_id().value())));
@@ -184,6 +188,88 @@ namespace cgride::executor
       return result;
     }
 
+    [[nodiscard]] TaskResult make_up_to_date_result(
+        const cgride::graph::Task &task,
+        std::chrono::milliseconds duration)
+    {
+      auto result = TaskResult::skipped(
+          task.id(),
+          "Task outputs are up to date.",
+          duration);
+
+      result.task_name(task.name());
+
+      return result;
+    }
+
+    [[nodiscard]] bool task_outputs_are_up_to_date(
+        const cgride::graph::Task &task)
+    {
+      if (task.inputs().empty() || task.outputs().empty())
+      {
+        return false;
+      }
+
+      std::filesystem::file_time_type oldest_output{};
+      bool have_output_time = false;
+
+      for (const auto &output : task.outputs())
+      {
+        std::error_code error_code;
+
+        if (!std::filesystem::exists(output, error_code) || error_code)
+        {
+          return false;
+        }
+
+        if (!std::filesystem::is_regular_file(output, error_code) || error_code)
+        {
+          return false;
+        }
+
+        const auto output_time = std::filesystem::last_write_time(output, error_code);
+
+        if (error_code)
+        {
+          return false;
+        }
+
+        if (!have_output_time || output_time < oldest_output)
+        {
+          oldest_output = output_time;
+          have_output_time = true;
+        }
+      }
+
+      if (!have_output_time)
+      {
+        return false;
+      }
+
+      for (const auto &input : task.inputs())
+      {
+        std::error_code error_code;
+
+        if (!std::filesystem::exists(input, error_code) || error_code)
+        {
+          return false;
+        }
+
+        if (!std::filesystem::is_regular_file(input, error_code) || error_code)
+        {
+          return false;
+        }
+
+        const auto input_time = std::filesystem::last_write_time(input, error_code);
+
+        if (error_code || input_time > oldest_output)
+        {
+          return false;
+        }
+      }
+
+      return true;
+    }
 
     [[nodiscard]] std::optional<Error> ensure_output_directories(
         const cgride::graph::Task &task)
@@ -232,6 +318,15 @@ namespace cgride::executor
             std::chrono::steady_clock::now() - start);
 
         return make_skipped_result(task, duration);
+      }
+
+      if (options.skip_up_to_date() && !options.dry_run() &&
+          task_outputs_are_up_to_date(task))
+      {
+        const auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - start);
+
+        return make_up_to_date_result(task, duration);
       }
 
       auto output_directory_error = ensure_output_directories(task);

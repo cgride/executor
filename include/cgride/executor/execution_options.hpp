@@ -81,6 +81,14 @@ namespace cgride::executor
     ExecutionOptions &capture_output(bool value) noexcept;
 
     /**
+     * @brief Control whether up-to-date task outputs may skip command execution.
+     *
+     * @param value True to skip tasks whose outputs are newer than inputs.
+     * @return Reference to these options.
+     */
+    ExecutionOptions &skip_up_to_date(bool value) noexcept;
+
+    /**
      * @brief Control whether child processes inherit the parent environment.
      *
      * This option may be combined with per-command environment overrides.
@@ -142,6 +150,11 @@ namespace cgride::executor
     [[nodiscard]] bool capture_output() const noexcept;
 
     /**
+     * @brief Return true if up-to-date tasks may be skipped.
+     */
+    [[nodiscard]] bool skip_up_to_date() const noexcept;
+
+    /**
      * @brief Return true if child processes should inherit the parent environment.
      */
     [[nodiscard]] bool inherit_environment() const noexcept;
@@ -190,6 +203,7 @@ namespace cgride::executor
     bool stop_on_failure_{true};
     bool dry_run_{false};
     bool capture_output_{true};
+    bool skip_up_to_date_{true};
     bool inherit_environment_{true};
     std::optional<std::chrono::milliseconds> timeout_{};
     cgride::core::CancellationToken cancellation_token_{};
