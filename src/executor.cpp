@@ -16,6 +16,9 @@
 #include <cgride/executor/executor.hpp>
 
 #include <chrono>
+#include <filesystem>
+#include <optional>
+#include <system_error>
 #include <string>
 #include <unordered_set>
 #include <utility>
@@ -181,6 +184,35 @@ namespace cgride::executor
       return result;
     }
 
+
+    [[nodiscard]] std::optional<Error> ensure_output_directories(
+        const cgride::graph::Task &task)
+    {
+      for (const auto &output : task.outputs())
+      {
+        const auto parent = output.parent_path();
+
+        if (parent.empty())
+        {
+          continue;
+        }
+
+        std::error_code error_code;
+        std::filesystem::create_directories(parent, error_code);
+
+        if (error_code)
+        {
+          return Error(
+              ErrorCode::IoError,
+              "Cannot create task output directory.",
+              error_code.message(),
+              parent);
+        }
+      }
+
+      return std::nullopt;
+    }
+
     [[nodiscard]] TaskResult execute_one_task(
         const cgride::graph::Task &task,
         const ExecutionOptions &options)
@@ -200,6 +232,23 @@ namespace cgride::executor
             std::chrono::steady_clock::now() - start);
 
         return make_skipped_result(task, duration);
+      }
+
+      auto output_directory_error = ensure_output_directories(task);
+
+      if (output_directory_error.has_value())
+      {
+        const auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - start);
+
+        auto result = TaskResult::failed(
+            task.id(),
+            output_directory_error.value(),
+            duration);
+
+        result.task_name(task.name());
+
+        return result;
       }
 
       const auto process = run_process(task.command().value(), options);

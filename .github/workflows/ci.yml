@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: ${{ matrix.os }} / ${{ matrix.build_type }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        build_type: [Debug, Release]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select strict compiler flags
+        run: |
+          set -euo pipefail
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            strict_flags="/W4 /WX /permissive-"
+          else
+            strict_flags="-Wall -Wextra -Wpedantic -Werror"
+          fi
+          echo "STRICT_FLAGS=$strict_flags" >> "$GITHUB_ENV"
+          echo "INSTALL_PREFIX=$RUNNER_TEMP/cgride-prefix" >> "$GITHUB_ENV"
+
+      - name: Build and install Cgride dependencies
+        run: |
+          set -euo pipefail
+          cmake -E make_directory "$INSTALL_PREFIX"
+          clone_dependency() {
+            local repo="$1"
+            local dest="$RUNNER_TEMP/deps/$repo"
+            local ref="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME:-main}}"
+            cmake -E make_directory "$RUNNER_TEMP/deps"
+            if git clone --depth 1 --branch "$ref" "https://github.com/cgride/$repo.git" "$dest"; then
+              return 0
+            fi
+            rm -rf "$dest"
+            if git clone --depth 1 --branch main "https://github.com/cgride/$repo.git" "$dest"; then
+              return 0
+            fi
+            rm -rf "$dest"
+            git clone --depth 1 --branch dev "https://github.com/cgride/$repo.git" "$dest"
+          }
+          build_dependency() {
+            local repo="$1"
+            local option="$2"
+            local src="$RUNNER_TEMP/deps/$repo"
+            local build="$RUNNER_TEMP/build-dep-$repo-${{ matrix.build_type }}"
+            clone_dependency "$repo"
+            cmake -S "$src" -B "$build" \
+              -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+              -DCMAKE_INSTALL_PREFIX="$INSTALL_PREFIX" \
+              -DCMAKE_PREFIX_PATH="$INSTALL_PREFIX" \
+              -DCMAKE_CXX_FLAGS="$STRICT_FLAGS" \
+              -D${option}_BUILD_TESTS=OFF
+            cmake --build "$build" --parallel
+            cmake --install "$build"
+          }
+          build_dependency core CGRIDE_CORE
+          build_dependency graph CGRIDE_GRAPH
+
+      - name: Configure
+        run: |
+          set -euo pipefail
+          cmake -E make_directory "$INSTALL_PREFIX"
+          cmake -S . -B "$RUNNER_TEMP/build-${{ matrix.build_type }}" \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DCMAKE_INSTALL_PREFIX="$INSTALL_PREFIX" \
+            -DCMAKE_PREFIX_PATH="$INSTALL_PREFIX" \
+            -DCMAKE_CXX_FLAGS="$STRICT_FLAGS" \
+            -DCGRIDE_EXECUTOR_BUILD_TESTS=ON
+
+      - name: Build
+        run: cmake --build "$RUNNER_TEMP/build-${{ matrix.build_type }}" --parallel
+
+      - name: Test
+        run: ctest --test-dir "$RUNNER_TEMP/build-${{ matrix.build_type }}" --output-on-failure
+
+      - name: Install
+        run: cmake --install "$RUNNER_TEMP/build-${{ matrix.build_type }}"
