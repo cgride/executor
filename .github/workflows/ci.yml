@@ -29,11 +29,7 @@ jobs:
       - name: Select strict compiler flags
         run: |
           set -euo pipefail
-          if [[ "$RUNNER_OS" == "Windows" ]]; then
-            strict_flags="/W4 /WX /permissive-"
-          else
-            strict_flags="-Wall -Wextra -Wpedantic -Werror"
-          fi
+          strict_flags="-Wall -Wextra -Wpedantic -Werror"
           echo "STRICT_FLAGS=$strict_flags" >> "$GITHUB_ENV"
           echo "INSTALL_PREFIX=$RUNNER_TEMP/cgride-prefix" >> "$GITHUB_ENV"
 
