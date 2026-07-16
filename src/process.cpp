@@ -28,7 +28,12 @@
 
 #include <cgride/core/error.hpp>
 
-#if !defined(_WIN32)
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
 #include <cerrno>
 #include <csignal>
 #include <fcntl.h>
@@ -78,7 +83,380 @@ namespace cgride::executor
       return quoted;
     }
 
-#if !defined(_WIN32)
+#if defined(_WIN32)
+
+    struct WindowsHandle
+    {
+      HANDLE value{nullptr};
+
+      WindowsHandle() = default;
+      explicit WindowsHandle(HANDLE handle) noexcept : value(handle) {}
+      WindowsHandle(const WindowsHandle &) = delete;
+      WindowsHandle &operator=(const WindowsHandle &) = delete;
+
+      WindowsHandle(WindowsHandle &&other) noexcept : value(other.value)
+      {
+        other.value = nullptr;
+      }
+
+      WindowsHandle &operator=(WindowsHandle &&other) noexcept
+      {
+        if (this != &other)
+        {
+          close();
+          value = other.value;
+          other.value = nullptr;
+        }
+
+        return *this;
+      }
+
+      ~WindowsHandle()
+      {
+        close();
+      }
+
+      void close() noexcept
+      {
+        if (value != nullptr && value != INVALID_HANDLE_VALUE)
+        {
+          ::CloseHandle(value);
+        }
+
+        value = nullptr;
+      }
+
+      [[nodiscard]] HANDLE get() const noexcept
+      {
+        return value;
+      }
+
+      [[nodiscard]] HANDLE *put() noexcept
+      {
+        close();
+        return &value;
+      }
+
+      [[nodiscard]] bool valid() const noexcept
+      {
+        return value != nullptr && value != INVALID_HANDLE_VALUE;
+      }
+    };
+
+    [[nodiscard]] std::wstring widen(std::string_view value)
+    {
+      if (value.empty())
+      {
+        return {};
+      }
+
+      const auto required = ::MultiByteToWideChar(
+          CP_UTF8,
+          0,
+          value.data(),
+          static_cast<int>(value.size()),
+          nullptr,
+          0);
+
+      if (required <= 0)
+      {
+        return std::wstring(value.begin(), value.end());
+      }
+
+      std::wstring output(static_cast<std::size_t>(required), L'\0');
+      ::MultiByteToWideChar(
+          CP_UTF8,
+          0,
+          value.data(),
+          static_cast<int>(value.size()),
+          output.data(),
+          required);
+
+      return output;
+    }
+
+    [[nodiscard]] std::string windows_error_message(DWORD code = ::GetLastError())
+    {
+      LPWSTR buffer = nullptr;
+      const auto count = ::FormatMessageW(
+          FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+          nullptr,
+          code,
+          MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+          reinterpret_cast<LPWSTR>(&buffer),
+          0,
+          nullptr);
+
+      if (count == 0 || buffer == nullptr)
+      {
+        return "Windows error " + std::to_string(code);
+      }
+
+      std::wstring wide(buffer, count);
+      ::LocalFree(buffer);
+
+      const auto required = ::WideCharToMultiByte(
+          CP_UTF8,
+          0,
+          wide.data(),
+          static_cast<int>(wide.size()),
+          nullptr,
+          0,
+          nullptr,
+          nullptr);
+
+      if (required <= 0)
+      {
+        return "Windows error " + std::to_string(code);
+      }
+
+      std::string output(static_cast<std::size_t>(required), '\0');
+      ::WideCharToMultiByte(
+          CP_UTF8,
+          0,
+          wide.data(),
+          static_cast<int>(wide.size()),
+          output.data(),
+          required,
+          nullptr,
+          nullptr);
+
+      while (!output.empty() && (output.back() == '\n' || output.back() == '\r'))
+      {
+        output.pop_back();
+      }
+
+      return output;
+    }
+
+    [[nodiscard]] std::wstring quote_windows_argument(std::string_view value)
+    {
+      if (!needs_quoting(std::string(value)))
+      {
+        return widen(value);
+      }
+
+      std::wstring input = widen(value);
+      std::wstring output = L"\"";
+      std::size_t backslashes = 0;
+
+      for (const auto character : input)
+      {
+        if (character == L'\\')
+        {
+          ++backslashes;
+          continue;
+        }
+
+        if (character == L'\"')
+        {
+          output.append(backslashes * 2 + 1, L'\\');
+          output.push_back(character);
+          backslashes = 0;
+          continue;
+        }
+
+        output.append(backslashes, L'\\');
+        backslashes = 0;
+        output.push_back(character);
+      }
+
+      output.append(backslashes * 2, L'\\');
+      output.push_back(L'\"');
+      return output;
+    }
+
+    [[nodiscard]] std::wstring build_windows_command_line(
+        const cgride::core::Command &command)
+    {
+      std::wstring output = quote_windows_argument(command.program());
+
+      for (const auto &argument : command.args())
+      {
+        output.push_back(L' ');
+        output += quote_windows_argument(argument);
+      }
+
+      return output;
+    }
+
+    void read_available_windows(HANDLE handle, std::string &output)
+    {
+      if (handle == nullptr || handle == INVALID_HANDLE_VALUE)
+      {
+        return;
+      }
+
+      while (true)
+      {
+        DWORD available = 0;
+
+        if (::PeekNamedPipe(handle, nullptr, 0, nullptr, &available, nullptr) == 0 || available == 0)
+        {
+          break;
+        }
+
+        char buffer[4096];
+        DWORD read = 0;
+        const auto requested = std::min<DWORD>(available, static_cast<DWORD>(sizeof(buffer)));
+
+        if (::ReadFile(handle, buffer, requested, &read, nullptr) == 0 || read == 0)
+        {
+          break;
+        }
+
+        output.append(buffer, buffer + read);
+      }
+    }
+
+    [[nodiscard]] cgride::core::Result<ProcessResult> run_process_windows(
+        const cgride::core::Command &command,
+        const ExecutionOptions &options)
+    {
+      if (options.cancelled())
+      {
+        return ProcessResult::cancelled();
+      }
+
+      if (options.dry_run())
+      {
+        return ProcessResult::exited(
+            0,
+            describe_command(command),
+            {},
+            std::chrono::milliseconds{0});
+      }
+
+      SECURITY_ATTRIBUTES security_attributes{};
+      security_attributes.nLength = sizeof(security_attributes);
+      security_attributes.bInheritHandle = TRUE;
+
+      WindowsHandle stdout_read;
+      WindowsHandle stdout_write;
+      WindowsHandle stderr_read;
+      WindowsHandle stderr_write;
+
+      if (options.capture_output())
+      {
+        if (::CreatePipe(stdout_read.put(), stdout_write.put(), &security_attributes, 0) == 0)
+        {
+          return ProcessResult::failed_to_start(
+              Error(ErrorCode::ProcessFailed, "Failed to create stdout pipe.", windows_error_message()));
+        }
+
+        if (::CreatePipe(stderr_read.put(), stderr_write.put(), &security_attributes, 0) == 0)
+        {
+          return ProcessResult::failed_to_start(
+              Error(ErrorCode::ProcessFailed, "Failed to create stderr pipe.", windows_error_message()));
+        }
+
+        ::SetHandleInformation(stdout_read.get(), HANDLE_FLAG_INHERIT, 0);
+        ::SetHandleInformation(stderr_read.get(), HANDLE_FLAG_INHERIT, 0);
+      }
+
+      STARTUPINFOW startup_info{};
+      startup_info.cb = sizeof(startup_info);
+
+      if (options.capture_output())
+      {
+        startup_info.dwFlags |= STARTF_USESTDHANDLES;
+        startup_info.hStdOutput = stdout_write.get();
+        startup_info.hStdError = stderr_write.get();
+        startup_info.hStdInput = ::GetStdHandle(STD_INPUT_HANDLE);
+      }
+
+      PROCESS_INFORMATION process_info{};
+      auto command_line = build_windows_command_line(command);
+      std::wstring cwd;
+      const wchar_t *cwd_ptr = nullptr;
+
+      if (command.cwd().has_value() && !command.cwd()->empty())
+      {
+        cwd = command.cwd()->wstring();
+        cwd_ptr = cwd.c_str();
+      }
+
+      const auto start = std::chrono::steady_clock::now();
+      const auto created = ::CreateProcessW(
+          nullptr,
+          command_line.data(),
+          nullptr,
+          nullptr,
+          options.capture_output() ? TRUE : FALSE,
+          0,
+          nullptr,
+          cwd_ptr,
+          &startup_info,
+          &process_info);
+
+      if (created == 0)
+      {
+        return ProcessResult::failed_to_start(
+            Error(ErrorCode::ProcessFailed, "Failed to start process.", windows_error_message()));
+      }
+
+      WindowsHandle process(process_info.hProcess);
+      WindowsHandle thread(process_info.hThread);
+
+      stdout_write.close();
+      stderr_write.close();
+
+      std::string standard_output;
+      std::string standard_error;
+      DWORD wait_result = WAIT_TIMEOUT;
+
+      while (wait_result == WAIT_TIMEOUT)
+      {
+        if (options.capture_output())
+        {
+          read_available_windows(stdout_read.get(), standard_output);
+          read_available_windows(stderr_read.get(), standard_error);
+        }
+
+        wait_result = ::WaitForSingleObject(process.get(), 10);
+
+        const auto now = std::chrono::steady_clock::now();
+        const auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(now - start);
+
+        if (options.cancelled())
+        {
+          ::TerminateProcess(process.get(), 1);
+          return ProcessResult::cancelled()
+              .standard_output(std::move(standard_output))
+              .standard_error(std::move(standard_error))
+              .duration(duration);
+        }
+
+        if (options.has_timeout() && duration > options.timeout().value())
+        {
+          ::TerminateProcess(process.get(), 1);
+          return ProcessResult::timed_out()
+              .standard_output(std::move(standard_output))
+              .standard_error(std::move(standard_error))
+              .duration(duration);
+        }
+      }
+
+      if (options.capture_output())
+      {
+        read_available_windows(stdout_read.get(), standard_output);
+        read_available_windows(stderr_read.get(), standard_error);
+      }
+
+      DWORD exit_code = 1;
+      ::GetExitCodeProcess(process.get(), &exit_code);
+
+      const auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - start);
+
+      return ProcessResult::exited(
+          static_cast<int>(exit_code),
+          std::move(standard_output),
+          std::move(standard_error),
+          duration);
+    }
+
+#else
 
     struct PipePair
     {
@@ -588,12 +966,7 @@ namespace cgride::executor
     }
 
 #if defined(_WIN32)
-    (void)options;
-
-    return ProcessResult::failed_to_start(
-        Error(
-            ErrorCode::UnsupportedPlatform,
-            "Process execution is not implemented for Windows yet."));
+    return run_process_windows(command, options);
 #else
     return run_process_posix(command, options);
 #endif
