@@ -222,7 +222,7 @@ int main()
   {
     cgride::core::Command command;
 
-    command.program("cmd");
+    command.program("cgride-command-that-does-not-exist");
 
     cgride::executor::ExecutionOptions options;
 
@@ -235,7 +235,7 @@ int main()
     assert(!process.success());
     assert(process.status() == cgride::executor::ProcessStatus::FailedToStart);
     assert(process.has_error());
-    assert(process.error().value().code() == cgride::core::ErrorCode::UnsupportedPlatform);
+    assert(process.error().value().code() == cgride::core::ErrorCode::ProcessFailed);
   }
 #endif
 

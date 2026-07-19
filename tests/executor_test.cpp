@@ -153,15 +153,6 @@ int main()
 
     auto result = cgride::executor::execute_graph(graph, options);
 
-#if defined(_WIN32)
-    assert(result);
-
-    const auto &results = result.value();
-
-    assert(results.size() == 1);
-    assert(results[0].status() == cgride::executor::TaskStatus::Failed);
-    assert(results[0].has_error());
-#else
     assert(result);
 
     const auto &results = result.value();
@@ -173,7 +164,6 @@ int main()
     assert(results[0].has_process_result());
     assert(results[0].process_result().value().standard_output() ==
            "cgride-fake-compiler -c src/main.cpp -o build/main.o");
-#endif
   }
 
 #if !defined(_WIN32)
