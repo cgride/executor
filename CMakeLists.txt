@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.22)
 
 project(
   cgride-executor
-  VERSION 0.1.0
+  VERSION 0.1.1
   DESCRIPTION "Task graph execution, process running and structured execution results for Cgride."
   HOMEPAGE_URL "https://github.com/cgride/executor"
   LANGUAGES CXX
