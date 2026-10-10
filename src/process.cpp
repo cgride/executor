@@ -27,6 +27,7 @@
 #include <vector>
 
 #include <cgride/core/error.hpp>
+#include <cgride/core/environment.hpp>
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -520,14 +521,14 @@ namespace cgride::executor
         }
       }
 
-      const auto *value = std::getenv(key.c_str());
+      const auto value = cgride::core::environment_variable(key.c_str());
 
-      if (value == nullptr)
+      if (!value.has_value())
       {
         return {};
       }
 
-      return value;
+      return value.value();
     }
 
     [[nodiscard]] std::vector<std::string> split_path_list(const std::string &value)
